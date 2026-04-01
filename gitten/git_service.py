@@ -110,3 +110,76 @@ class GitService:
         parent = commit.parents[0]
         diffs = parent.diff(commit)
         return [d.b_path or d.a_path for d in diffs]
+
+    # ------------------------------------------------------------------
+    # Mutations
+    # ------------------------------------------------------------------
+
+    def revert(self, commit_hash: str) -> None:
+        """Create a new commit that reverts the given commit."""
+        self._repo.git.revert(commit_hash, "--no-edit")
+
+    def drop(self, commit_hash: str) -> None:
+        """Remove a commit from history using interactive rebase (drop)."""
+        import os, tempfile, stat
+
+        script = f"""#!/bin/sh
+sed -i.bak 's/^pick {commit_hash[:7]}/drop {commit_hash[:7]}/' "$1"
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
+            f.write(script)
+            script_path = f.name
+        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
+        try:
+            env = os.environ.copy()
+            env["GIT_SEQUENCE_EDITOR"] = script_path
+            self._repo.git.rebase("-i", "--root", env=env)
+        finally:
+            os.unlink(script_path)
+
+    def squash(self, commit_hash: str, message: str) -> None:
+        """Squash all unpushed commits up to and including commit_hash into one."""
+        unpushed = self._get_unpushed_hashes()
+        # Find the oldest unpushed commit to rebase from
+        all_commits = list(self._repo.iter_commits(self._repo.active_branch.name, max_count=500))
+        unpushed_commits = [c for c in all_commits if c.hexsha in unpushed]
+        if not unpushed_commits:
+            return
+        oldest_unpushed = unpushed_commits[-1]
+
+        # Parent of oldest unpushed is our rebase root
+        if not oldest_unpushed.parents:
+            # Squash all commits when everything including root is unpushed.
+            # Delete HEAD ref to create an orphan state, keeping index intact.
+            self._repo.git.update_ref("-d", "HEAD")
+        else:
+            root = oldest_unpushed.parents[0].hexsha
+            self._repo.git.reset("--soft", root)
+
+        self._repo.index.commit(message)
+
+    def cherry_pick(self, commit_hash: str) -> None:
+        """Apply a commit from another branch onto the current branch."""
+        self._repo.git.cherry_pick(commit_hash)
+
+    def push(self) -> None:
+        """Push current branch to its tracking remote. Raises git.GitCommandError on failure."""
+        branch = self._repo.active_branch
+        tracking = branch.tracking_branch()
+        if tracking is None:
+            raise ValueError(f"Branch '{branch.name}' has no remote tracking branch.")
+        remote_name = tracking.remote_name
+        self._repo.remote(remote_name).push(branch.name)
+
+    def has_remote_tracking(self) -> bool:
+        """Returns True if current branch has a remote tracking branch."""
+        try:
+            return self._repo.active_branch.tracking_branch() is not None
+        except Exception:
+            return False
+
+    def abort_cherry_pick(self) -> None:
+        self._repo.git.cherry_pick("--abort")
+
+    def abort_revert(self) -> None:
+        self._repo.git.revert("--abort")
