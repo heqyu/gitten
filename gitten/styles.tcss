@@ -76,3 +76,73 @@ DiffModal {
 #status-bar.error {
     color: $error;
 }
+
+/* ── Error modal ─────────────────────────────────────────────────── */
+
+ErrorModal {
+    align: center middle;
+}
+
+#error-container {
+    width: 70%;
+    max-height: 80%;
+    border: solid $error;
+    background: $surface;
+    padding: 1 2;
+}
+
+#error-title {
+    color: $error;
+    text-style: bold;
+}
+
+#error-body {
+    margin: 1 0;
+    overflow-y: scroll;
+    max-height: 20;
+}
+
+/* ── Help modal ──────────────────────────────────────────────────── */
+
+HelpModal {
+    align: center middle;
+}
+
+#help-body {
+    width: 60;
+    border: solid $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+/* ── Context menu ────────────────────────────────────────────────── */
+
+ContextMenu {
+    align: center middle;
+}
+
+ContextMenu > Label {
+    background: $panel;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#menu-list {
+    width: 50;
+    border: solid $accent;
+    background: $surface;
+}
+
+/* ── Squash message modal ────────────────────────────────────────── */
+
+_SquashMessageModal {
+    align: center middle;
+}
+
+_SquashMessageModal > Label {
+    padding: 0 1;
+}
+
+_SquashMessageModal > Input {
+    width: 60;
+}
