@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -54,4 +54,5 @@ class BranchInfo:
 
     @property
     def display_name(self) -> str:
-        return self.name
+        prefix = "● " if self.is_current else "  "
+        return f"{prefix}{self.name}"
