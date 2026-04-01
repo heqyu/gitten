@@ -132,11 +132,18 @@ class GitService:
             return set()
 
     def _get_changed_files(self, commit: git.Commit) -> list[str]:
+        # Use git diff-tree (porcelain command) instead of the GitPython object
+        # model to avoid _CatFileContentStream "read of closed file" on Windows.
         if not commit.parents:
-            return list(commit.stats.files.keys())
-        parent = commit.parents[0]
-        diffs = parent.diff(commit)
-        return [d.b_path or d.a_path for d in diffs]
+            output = self._repo.git.diff_tree(
+                "--no-commit-id", "-r", "--name-only", commit.hexsha
+            )
+        else:
+            output = self._repo.git.diff_tree(
+                "--no-commit-id", "-r", "--name-only",
+                commit.parents[0].hexsha, commit.hexsha,
+            )
+        return [f for f in output.splitlines() if f]
 
     # ------------------------------------------------------------------
     # Mutations
