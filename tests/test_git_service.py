@@ -1,7 +1,7 @@
 import pytest
 import git
 from gitten.git_service import GitService
-from gitten.models import CommitInfo, BranchInfo
+from gitten.models import CommitInfo
 
 
 def test_list_branches_includes_local(sample_repo):

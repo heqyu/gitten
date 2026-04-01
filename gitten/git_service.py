@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 import git
 
 from gitten.models import BranchInfo, CommitInfo
@@ -49,8 +48,8 @@ class GitService:
 
     def list_commits(
         self,
-        branch: Optional[str],
-        author: Optional[str] = None,
+        branch: str | None,
+        author: str | None = None,
         max_count: int = 200,
     ) -> list[CommitInfo]:
         rev = branch if branch else self._repo.active_branch.name
@@ -90,6 +89,10 @@ class GitService:
     # ------------------------------------------------------------------
 
     def _get_unpushed_hashes(self) -> set[str]:
+        """Returns hashes of commits not yet pushed to remote.
+        Always checks the currently active branch, regardless of what
+        branch is being listed in list_commits().
+        """
         try:
             branch = self._repo.active_branch
             tracking = branch.tracking_branch()
