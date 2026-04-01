@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.events import Click, Key
 from textual.widget import Widget
 from textual.widgets import Input, ListView, ListItem, Label
 from textual.message import Message
@@ -65,7 +66,7 @@ class CommitPanel(Widget):
             return self._commits[idx]
         return None
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: Key) -> None:
         if event.key == "m":
             commit = self.get_selected_commit()
             if commit:
@@ -84,7 +85,8 @@ class CommitPanel(Widget):
         items.append(("Copy hash", "copy_hash"))
         self.app.push_screen(ContextMenu(items=items, commit=commit, source="middle"))
 
-    def on_right_click(self, event) -> None:
-        commit = self.get_selected_commit()
-        if commit:
-            self._open_context_menu(commit)
+    def on_click(self, event: Click) -> None:
+        if event.button == 3:
+            commit = self.get_selected_commit()
+            if commit:
+                self._open_context_menu(commit)
