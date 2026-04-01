@@ -49,14 +49,20 @@ class GitService:
 
         return results
 
+    def get_current_branch_name(self) -> str:
+        try:
+            return self._repo.active_branch.name
+        except TypeError:
+            return f"HEAD ({self._repo.head.commit.hexsha[:7]})"
+
     def list_commits(
         self,
         branch: str | None,
         author: str | None = None,
         max_count: int = 200,
     ) -> list[CommitInfo]:
-        rev = branch if branch else self._repo.active_branch.name
-        unpushed_hashes = self._get_unpushed_hashes()
+        rev = branch if branch else self.get_current_branch_name()
+        unpushed_hashes = self._get_unpushed_hashes(branch=branch)
 
         commits = []
         for commit in self._repo.iter_commits(rev, max_count=max_count):
@@ -91,19 +97,18 @@ class GitService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_unpushed_hashes(self) -> set[str]:
-        """Returns hashes of commits not yet pushed to remote.
-        Always checks the currently active branch, regardless of what
-        branch is being listed in list_commits().
-        """
+    def _get_unpushed_hashes(self, branch: str | None = None) -> set[str]:
+        """Returns hashes of commits not yet pushed to remote."""
         try:
-            branch = self._repo.active_branch
-            tracking = branch.tracking_branch()
+            ref = self._repo.active_branch if branch is None else self._repo.heads[branch]
+            tracking = ref.tracking_branch()
             if tracking is None:
                 # No remote tracking branch — all commits are "unpushed"
-                return {c.hexsha for c in self._repo.iter_commits(branch.name, max_count=500)}
-            commits = self._repo.iter_commits(f"{tracking}..{branch.name}")
-            return {c.hexsha for c in commits}
+                return {c.hexsha for c in self._repo.iter_commits(ref)}
+            return {
+                c.hexsha
+                for c in self._repo.iter_commits(f"{tracking.name}..{ref.name}")
+            }
         except Exception:
             return set()
 
@@ -125,12 +130,27 @@ class GitService:
     def drop(self, commit_hash: str) -> None:
         """Remove a commit from history using interactive rebase (drop).
 
-        Note: Relies on /bin/sh and sed being available (macOS/Linux only).
-        The GIT_SEQUENCE_EDITOR script drops the target commit by its short hash.
+        Note: Relies on /bin/sh and Python being available.
+        The GIT_SEQUENCE_EDITOR script drops the target commit by its full hash
+        prefix-matching the abbreviated hash used by git in the rebase todo file.
         """
-        short_hash = commit_hash[:7]
         script = f"""#!/bin/sh
-sed -i.bak "s/^pick {short_hash}/drop {short_hash}/" "$1"
+python3 - "$1" << 'PYEOF'
+import sys
+target = "{commit_hash}"
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+out = []
+for line in lines:
+    parts = line.split()
+    if len(parts) >= 2 and parts[0] == "pick" and target.startswith(parts[1]):
+        out.append("drop " + " ".join(parts[1:]) + "\\n")
+    else:
+        out.append(line)
+with open(path, "w") as f:
+    f.writelines(out)
+PYEOF
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
             f.write(script)

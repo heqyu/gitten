@@ -8,6 +8,11 @@ from textual.containers import ScrollableContainer
 from gitten.git_service import GitService
 
 
+def _escape_markup(text: str) -> str:
+    """Escape Rich markup special characters in text."""
+    return text.replace("[", "\\[")
+
+
 class DiffModal(ModalScreen):
     """Full-screen modal for viewing file diffs."""
 
@@ -49,12 +54,13 @@ class DiffModal(ModalScreen):
         )
         lines = []
         for line in self._diff_text.splitlines():
+            escaped = _escape_markup(line)
             if line.startswith("+") and not line.startswith("+++"):
-                lines.append(f"[green]{line}[/green]")
+                lines.append(f"[green]{escaped}[/green]")
             elif line.startswith("-") and not line.startswith("---"):
-                lines.append(f"[red]{line}[/red]")
+                lines.append(f"[red]{escaped}[/red]")
             else:
-                lines.append(line)
+                lines.append(escaped)
         self.query_one("#diff-content", Static).update("\n".join(lines))
 
     def action_next_file(self) -> None:

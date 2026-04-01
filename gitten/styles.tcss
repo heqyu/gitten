@@ -64,6 +64,7 @@ DiffModal {
 /* ── Status bar ──────────────────────────────────────────────────── */
 
 #status-bar {
+    dock: bottom;
     height: 1;
     background: $panel;
     padding: 0 1;

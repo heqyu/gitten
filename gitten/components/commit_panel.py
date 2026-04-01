@@ -25,7 +25,7 @@ class CommitPanel(Widget):
 
     def compose(self) -> ComposeResult:
         current = self.git.get_current_user()
-        branch_name = self.git._repo.active_branch.name
+        branch_name = self.git.get_current_branch_name()
         yield Label(f" {branch_name}", id="middle-branch-label")
         yield Input(
             value=current,

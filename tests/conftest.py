@@ -5,7 +5,7 @@ from pathlib import Path
 
 @pytest.fixture
 def sample_repo(tmp_path):
-    """Creates a git repo with a few commits and a remote."""
+    """Creates a git repo with a few commits (no remote)."""
     repo = git.Repo.init(tmp_path)
     repo.config_writer().set_value("user", "name", "Test User").release()
     repo.config_writer().set_value("user", "email", "test@example.com").release()
