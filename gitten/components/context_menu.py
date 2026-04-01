@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pyperclip
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import ListView, ListItem, Label
+from textual.widgets import ListView, ListItem, Label, Input
 
+from gitten.git_service import GitService
 from gitten.models import CommitInfo
 
 
@@ -86,21 +89,20 @@ class _SquashMessageModal(ModalScreen):
 
     BINDINGS = [("escape", "dismiss", "Cancel")]
 
-    def __init__(self, commit: CommitInfo, git, app_ref) -> None:
+    def __init__(self, commit: CommitInfo, git: GitService, app_ref: Any) -> None:
         super().__init__()
         self._commit = commit
         self._git = git
         self._app_ref = app_ref
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Input
         yield Label("Squash message:")
         yield Input(
             value=f"squash: {self._commit.message.splitlines()[0]}",
             id="squash-input",
         )
 
-    def on_input_submitted(self, event) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         message = event.value.strip()
         if message:
             self.dismiss()
