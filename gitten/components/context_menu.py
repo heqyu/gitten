@@ -30,10 +30,9 @@ class ContextMenu(ModalScreen):
 
     def compose(self) -> ComposeResult:
         yield Label(f" {self._commit.short_hash}  {self._commit.message.splitlines()[0][:50]}")
-        lv = ListView(id="menu-list")
-        for label, _ in self._items:
-            lv.append(ListItem(Label(f"  {label}")))
-        yield lv
+        with ListView(id="menu-list"):
+            for label, _ in self._items:
+                yield ListItem(Label(f"  {label}"))
         yield LoadingIndicator(id="menu-loading")
 
     def on_mount(self) -> None:
