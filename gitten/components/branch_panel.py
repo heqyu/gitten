@@ -31,6 +31,9 @@ class BranchPanel(Widget):
         yield Input(placeholder="Filter by author", id="left-author-filter")
         yield ListView(id="left-commit-list")
 
+    def on_mount(self) -> None:
+        self.refresh_data()
+
     def refresh_data(self) -> None:
         self._branches = self.git.list_branches()
         options = [(b.display_name, b.name) for b in self._branches]
@@ -47,10 +50,15 @@ class BranchPanel(Widget):
         lv = self.query_one("#left-commit-list", ListView)
         lv.clear()
         for commit in self._commits:
-            lv.append(ListItem(Label(commit.summary_line)))
+            item = ListItem(Label(commit.summary_line), classes="commit-row")
+            if not commit.is_pushed:
+                item.add_class("unpushed")
+            lv.append(item)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "branch-select":
+            if event.value is Select.BLANK:
+                return
             self._selected_branch = event.value
             self._load_commits()
 
@@ -72,7 +80,9 @@ class BranchPanel(Widget):
 
     def _open_context_menu(self, commit: CommitInfo) -> None:
         from gitten.components.context_menu import ContextMenu
-        items = [("Cherry-pick to current branch", "cherry_pick"), ("Copy hash", "copy_hash")]
+        items = []
+        items.append(("Cherry-pick to current branch", "cherry_pick"))
+        items.append(("Copy hash", "copy_hash"))
         self.app.push_screen(ContextMenu(items=items, commit=commit, source="left"))
 
     def on_key(self, event: Key) -> None:
