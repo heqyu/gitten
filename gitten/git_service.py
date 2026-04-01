@@ -63,13 +63,20 @@ class GitService:
         except TypeError:
             return f"HEAD ({self._repo.head.commit.hexsha[:7]})"
 
+    def _current_rev(self) -> str:
+        """Return a git-parseable rev for the current HEAD (works in detached HEAD too)."""
+        try:
+            return self._repo.active_branch.name
+        except TypeError:
+            return self._repo.head.commit.hexsha
+
     def list_commits(
         self,
         branch: str | None,
         author: str | None = None,
         max_count: int = 200,
     ) -> list[CommitInfo]:
-        rev = branch if branch else self.get_current_branch_name()
+        rev = branch if branch else self._current_rev()
         unpushed_hashes = self._get_unpushed_hashes(branch=branch)
 
         commits = []
