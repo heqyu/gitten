@@ -3,8 +3,9 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.events import Click, Key
 from textual.widget import Widget
-from textual.widgets import Input, ListView, ListItem, Label
+from textual.widgets import Input, ListView, ListItem, Label, LoadingIndicator
 from textual.message import Message
+from textual import work
 
 from gitten.git_service import GitService
 from gitten.models import CommitInfo
@@ -32,6 +33,7 @@ class CommitPanel(Widget):
             placeholder="Filter by author (blank = all)",
             id="middle-author-filter",
         )
+        yield LoadingIndicator(id="middle-loading")
         yield ListView(id="middle-commit-list")
 
     def on_mount(self) -> None:
@@ -39,7 +41,19 @@ class CommitPanel(Widget):
 
     def refresh_commits(self) -> None:
         author = self.query_one("#middle-author-filter", Input).value.strip() or None
-        self._commits = self.git.list_commits(branch=None, author=author)
+        loading = self.query_one("#middle-loading", LoadingIndicator)
+        loading.display = True
+        self._load_commits_worker(author)
+
+    @work(thread=True)
+    def _load_commits_worker(self, author: str | None) -> None:
+        commits = self.git.list_commits(branch=None, author=author)
+        self.app.call_from_thread(self._on_commits_loaded, commits)
+
+    def _on_commits_loaded(self, commits: list[CommitInfo]) -> None:
+        self._commits = commits
+        loading = self.query_one("#middle-loading", LoadingIndicator)
+        loading.display = False
         self._render_list()
 
     def _render_list(self) -> None:

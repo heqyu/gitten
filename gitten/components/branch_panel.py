@@ -3,8 +3,9 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.events import Click, Key
 from textual.widget import Widget
-from textual.widgets import Input, ListView, ListItem, Label, Select
+from textual.widgets import Input, ListView, ListItem, Label, Select, LoadingIndicator
 from textual.message import Message
+from textual import work
 
 from gitten.git_service import GitService
 from gitten.models import CommitInfo, BranchInfo
@@ -29,6 +30,7 @@ class BranchPanel(Widget):
         yield Label("≡", id="left-toggle-icon")
         yield Select([], id="branch-select", prompt="Select branch…")
         yield Input(placeholder="Filter by author", id="left-author-filter")
+        yield LoadingIndicator(id="left-loading")
         yield ListView(id="left-commit-list")
 
     def on_mount(self) -> None:
@@ -44,9 +46,19 @@ class BranchPanel(Widget):
         if not self._selected_branch:
             return
         author = self.query_one("#left-author-filter", Input).value.strip() or None
-        self._commits = self.git.list_commits(
-            branch=self._selected_branch, author=author
-        )
+        loading = self.query_one("#left-loading", LoadingIndicator)
+        loading.display = True
+        self._load_commits_worker(self._selected_branch, author)
+
+    @work(thread=True)
+    def _load_commits_worker(self, branch: str, author: str | None) -> None:
+        commits = self.git.list_commits(branch=branch, author=author)
+        self.app.call_from_thread(self._on_commits_loaded, commits)
+
+    def _on_commits_loaded(self, commits: list[CommitInfo]) -> None:
+        self._commits = commits
+        loading = self.query_one("#left-loading", LoadingIndicator)
+        loading.display = False
         lv = self.query_one("#left-commit-list", ListView)
         lv.clear()
         for commit in self._commits:

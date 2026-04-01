@@ -68,7 +68,6 @@ class GitService:
         for commit in self._repo.iter_commits(rev, max_count=max_count):
             if author and author.lower() not in commit.author.name.lower():
                 continue
-            changed = self._get_changed_files(commit)
             commits.append(CommitInfo(
                 hash=commit.hexsha,
                 short_hash=commit.hexsha[:7],
@@ -76,9 +75,14 @@ class GitService:
                 author=commit.author.name,
                 date=commit.authored_datetime,
                 is_pushed=commit.hexsha not in unpushed_hashes,
-                changed_files=changed,
+                changed_files=[],  # lazy — fetched on demand via get_changed_files()
             ))
         return commits
+
+    def get_changed_files(self, commit_hash: str) -> list[str]:
+        """Fetch changed files for a single commit (called lazily on detail view)."""
+        commit = self._repo.commit(commit_hash)
+        return self._get_changed_files(commit)
 
     def get_file_diff(self, commit_hash: str, file_path: str) -> str:
         commit = self._repo.commit(commit_hash)

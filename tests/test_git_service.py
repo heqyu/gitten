@@ -47,16 +47,18 @@ def test_get_current_user(sample_repo):
 def test_changed_files_on_commit(sample_repo):
     svc = GitService(sample_repo.working_dir)
     commits = svc.list_commits(branch=None)
-    # latest commit added extra.py
+    # latest commit added extra.py — use get_changed_files() for lazy fetch
     latest = commits[0]
-    assert "extra.py" in latest.changed_files
+    files = svc.get_changed_files(latest.hash)
+    assert "extra.py" in files
 
 
 def test_get_file_diff_returns_string(sample_repo):
     svc = GitService(sample_repo.working_dir)
     commits = svc.list_commits(branch=None)
     latest = commits[0]
-    diff = svc.get_file_diff(commit_hash=latest.hash, file_path=latest.changed_files[0])
+    files = svc.get_changed_files(latest.hash)
+    diff = svc.get_file_diff(commit_hash=latest.hash, file_path=files[0])
     assert isinstance(diff, str)
     assert len(diff) > 0
 
@@ -121,4 +123,8 @@ def test_cherry_pick_applies_commit(sample_repo):
     svc.cherry_pick(commit_hash=pick_commit.hexsha)
 
     commits = svc.list_commits(branch=None)
-    assert any("feature.py" in f for c in commits for f in c.changed_files)
+    assert any(
+        "feature.py" in f
+        for c in commits
+        for f in svc.get_changed_files(c.hash)
+    )

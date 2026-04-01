@@ -5,6 +5,7 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widget import Widget
 from textual.widgets import Label, ListView, ListItem, Static
+from textual import work
 
 from gitten.git_service import GitService
 from gitten.models import CommitInfo
