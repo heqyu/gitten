@@ -9,6 +9,14 @@ import git
 from gitten.models import BranchInfo, CommitInfo
 
 
+class DirtyWorkdirError(Exception):
+    """Raised when a git mutation requires a clean working directory."""
+
+
+class RebaseConflictError(Exception):
+    """Raised when an interactive rebase fails mid-way (conflict or error)."""
+
+
 class GitService:
     def __init__(self, repo_path: str | Path) -> None:
         self._repo = git.Repo(repo_path)
@@ -129,15 +137,18 @@ class GitService:
 
     def revert(self, commit_hash: str) -> None:
         """Create a new commit that reverts the given commit."""
+        self._require_clean_workdir()
         self._repo.git.revert(commit_hash, "--no-edit")
 
     def drop(self, commit_hash: str) -> None:
         """Remove a commit from history using interactive rebase (drop).
 
+        Raises DirtyWorkdirError if there are uncommitted changes.
         Note: Relies on /bin/sh and Python being available.
         The GIT_SEQUENCE_EDITOR script drops the target commit by its full hash
         prefix-matching the abbreviated hash used by git in the rebase todo file.
         """
+        self._require_clean_workdir()
         script = f"""#!/bin/sh
 python3 - "$1" << 'PYEOF'
 import sys
@@ -174,8 +185,31 @@ PYEOF
             # Use HEAD~N where N = min(50, depth-1) to avoid going before initial commit
             rebase_range = f"HEAD~{min(50, depth - 1)}"
             self._repo.git.rebase("-i", rebase_range, env=env)
+        except git.GitCommandError as e:
+            # If rebase left the repo mid-rebase, propagate a RebaseConflictError
+            if self._repo.is_dirty() or (Path(self._repo.git_dir) / "rebase-merge").exists() \
+                    or (Path(self._repo.git_dir) / "rebase-apply").exists():
+                raise RebaseConflictError(str(e)) from e
+            raise
         finally:
             os.unlink(script_path)
+
+    def abort_rebase(self) -> None:
+        """Abort an in-progress rebase."""
+        self._repo.git.rebase("--abort")
+
+    def _require_clean_workdir(self) -> None:
+        """Raise DirtyWorkdirError if there are uncommitted changes."""
+        if self._repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+            dirty = [item.a_path for item in self._repo.index.diff(None)]
+            dirty += [item.a_path for item in self._repo.index.diff("HEAD")]
+            files = ", ".join(dirty[:5])
+            if len(dirty) > 5:
+                files += f" (+{len(dirty) - 5} more)"
+            raise DirtyWorkdirError(
+                f"You have uncommitted changes: {files}\n"
+                "Please commit or stash them before proceeding."
+            )
 
     def squash(self, commit_hash: str, message: str) -> None:
         """Squash all unpushed commits up to and including commit_hash into one.
