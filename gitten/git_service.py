@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import stat
+import tempfile
 from pathlib import Path
 import git
 
@@ -120,11 +123,14 @@ class GitService:
         self._repo.git.revert(commit_hash, "--no-edit")
 
     def drop(self, commit_hash: str) -> None:
-        """Remove a commit from history using interactive rebase (drop)."""
-        import os, tempfile, stat
+        """Remove a commit from history using interactive rebase (drop).
 
+        Note: Relies on /bin/sh and sed being available (macOS/Linux only).
+        The GIT_SEQUENCE_EDITOR script drops the target commit by its short hash.
+        """
+        short_hash = commit_hash[:7]
         script = f"""#!/bin/sh
-sed -i.bak 's/^pick {commit_hash[:7]}/drop {commit_hash[:7]}/' "$1"
+sed -i.bak "s/^pick {short_hash}/drop {short_hash}/" "$1"
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
             f.write(script)
@@ -133,24 +139,45 @@ sed -i.bak 's/^pick {commit_hash[:7]}/drop {commit_hash[:7]}/' "$1"
         try:
             env = os.environ.copy()
             env["GIT_SEQUENCE_EDITOR"] = script_path
-            self._repo.git.rebase("-i", "--root", env=env)
+            # Count commits to determine safe rebase range
+            all_commits = list(self._repo.iter_commits(
+                self._repo.active_branch.name, max_count=51
+            ))
+            depth = len(all_commits)
+            if depth < 2:
+                # Only one commit — nothing to rebase onto
+                raise ValueError("Cannot drop the only commit in the repository.")
+            # Use HEAD~N where N = min(50, depth-1) to avoid going before initial commit
+            rebase_range = f"HEAD~{min(50, depth - 1)}"
+            self._repo.git.rebase("-i", rebase_range, env=env)
         finally:
             os.unlink(script_path)
 
     def squash(self, commit_hash: str, message: str) -> None:
-        """Squash all unpushed commits up to and including commit_hash into one."""
+        """Squash all unpushed commits up to and including commit_hash into one.
+
+        Note: For repos where all commits are unpushed (no tracking branch),
+        uses git update-ref -d HEAD to orphan the branch before recommitting.
+        """
         unpushed = self._get_unpushed_hashes()
-        # Find the oldest unpushed commit to rebase from
-        all_commits = list(self._repo.iter_commits(self._repo.active_branch.name, max_count=500))
+        all_commits = list(self._repo.iter_commits(
+            self._repo.active_branch.name, max_count=500
+        ))
+
+        # Find commits to squash: from oldest unpushed up to commit_hash
         unpushed_commits = [c for c in all_commits if c.hexsha in unpushed]
         if not unpushed_commits:
             return
-        oldest_unpushed = unpushed_commits[-1]
 
-        # Parent of oldest unpushed is our rebase root
+        # Verify commit_hash is in the unpushed set
+        if commit_hash not in unpushed:
+            raise ValueError(f"Commit {commit_hash[:7]} is already pushed and cannot be squashed.")
+
+        oldest_unpushed = unpushed_commits[-1]  # last in list = oldest commit
+
+        # Reset to the parent of the oldest unpushed commit
         if not oldest_unpushed.parents:
-            # Squash all commits when everything including root is unpushed.
-            # Delete HEAD ref to create an orphan state, keeping index intact.
+            # All commits are unpushed — orphan the branch
             self._repo.git.update_ref("-d", "HEAD")
         else:
             root = oldest_unpushed.parents[0].hexsha

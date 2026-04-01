@@ -101,7 +101,7 @@ def test_squash_unpushed_reduces_to_one(sample_repo):
     assert commits_after[0].message == "squash: combined"
 
 
-def test_cherry_pick_applies_commit(sample_repo, tmp_path):
+def test_cherry_pick_applies_commit(sample_repo):
     """Cherry-pick a commit from another branch onto current."""
     repo = sample_repo
     # Remember the original branch before creating feature branch
