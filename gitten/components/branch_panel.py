@@ -1,17 +1,88 @@
 from __future__ import annotations
-from textual.widget import Widget
+
 from textual.app import ComposeResult
-from textual.widgets import Label
+from textual.events import Click, Key
+from textual.widget import Widget
+from textual.widgets import Input, ListView, ListItem, Label, Select
+from textual.message import Message
+
 from gitten.git_service import GitService
+from gitten.models import CommitInfo, BranchInfo
 
 
 class BranchPanel(Widget):
+    """Left panel: collapsible branch selector + commit list."""
+
+    class CommitSelected(Message):
+        def __init__(self, commit: CommitInfo) -> None:
+            super().__init__()
+            self.commit = commit
+
     def __init__(self, git: GitService, **kwargs) -> None:
         super().__init__(**kwargs)
         self.git = git
+        self._commits: list[CommitInfo] = []
+        self._branches: list[BranchInfo] = []
+        self._selected_branch: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Label("Branch Panel (stub)")
+        yield Label("≡", id="left-toggle-icon")
+        yield Select([], id="branch-select", prompt="Select branch…")
+        yield Input(placeholder="Filter by author", id="left-author-filter")
+        yield ListView(id="left-commit-list")
 
     def refresh_data(self) -> None:
-        pass
+        self._branches = self.git.list_branches()
+        options = [(b.display_name, b.name) for b in self._branches]
+        sel = self.query_one("#branch-select", Select)
+        sel.set_options(options)
+
+    def _load_commits(self) -> None:
+        if not self._selected_branch:
+            return
+        author = self.query_one("#left-author-filter", Input).value.strip() or None
+        self._commits = self.git.list_commits(
+            branch=self._selected_branch, author=author
+        )
+        lv = self.query_one("#left-commit-list", ListView)
+        lv.clear()
+        for commit in self._commits:
+            lv.append(ListItem(Label(commit.summary_line)))
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "branch-select":
+            self._selected_branch = event.value
+            self._load_commits()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "left-author-filter":
+            self._load_commits()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        idx = self.query_one("#left-commit-list", ListView).index
+        if idx is not None and 0 <= idx < len(self._commits):
+            commit = self._commits[idx]
+            self.post_message(self.CommitSelected(commit))
+
+    def get_selected_commit(self) -> CommitInfo | None:
+        idx = self.query_one("#left-commit-list", ListView).index
+        if idx is not None and 0 <= idx < len(self._commits):
+            return self._commits[idx]
+        return None
+
+    def _open_context_menu(self, commit: CommitInfo) -> None:
+        from gitten.components.context_menu import ContextMenu
+        items = [("Cherry-pick to current branch", "cherry_pick"), ("Copy hash", "copy_hash")]
+        self.app.push_screen(ContextMenu(items=items, commit=commit, source="left"))
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "m":
+            commit = self.get_selected_commit()
+            if commit:
+                self._open_context_menu(commit)
+
+    def on_click(self, event: Click) -> None:
+        if event.button == 3:
+            commit = self.get_selected_commit()
+            if commit:
+                self._open_context_menu(commit)
