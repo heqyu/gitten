@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 import git
 
@@ -17,9 +19,15 @@ class RebaseConflictError(Exception):
     """Raised when an interactive rebase fails mid-way (conflict or error)."""
 
 
+# Field separator (ASCII Unit Separator) — extremely unlikely in commit messages.
+# Used last so split(..., 4) puts any stray \x1f chars in the message field.
+_SEP = "\x1f"
+
+
 class GitService:
     def __init__(self, repo_path: str | Path) -> None:
         self._repo = git.Repo(repo_path)
+        self._git_dir = Path(self._repo.git_dir)
 
     # ------------------------------------------------------------------
     # Queries
@@ -33,42 +41,62 @@ class GitService:
 
     def list_branches(self) -> list[BranchInfo]:
         results: list[BranchInfo] = []
-        current = self._repo.active_branch.name if not self._repo.head.is_detached else ""
+        current_name = self._head_branch_name()  # "HEAD" if detached
 
-        for branch in self._repo.branches:
-            results.append(BranchInfo(
-                name=branch.name,
-                is_local=True,
-                is_current=(branch.name == current),
-                remote=None,
-            ))
+        # Local branches
+        try:
+            out = self._repo.git.branch("--format=%(refname:short)")
+            for name in (ln.strip() for ln in out.splitlines()):
+                if name:
+                    results.append(BranchInfo(
+                        name=name, is_local=True,
+                        is_current=(name == current_name), remote=None,
+                    ))
+        except Exception:
+            pass
 
-        for remote in self._repo.remotes:
-            for ref in remote.refs:
-                # Skip HEAD pointers like origin/HEAD
-                if ref.remote_head == "HEAD":
+        # Remote branches
+        try:
+            out = self._repo.git.branch("-r", "--format=%(refname:short)")
+            for name in (ln.strip() for ln in out.splitlines()):
+                if not name or name.endswith("/HEAD"):
                     continue
+                remote = name.split("/")[0]
                 results.append(BranchInfo(
-                    name=ref.name,
-                    is_local=False,
-                    is_current=False,
-                    remote=ref.remote_name,
+                    name=name, is_local=False, is_current=False, remote=remote,
                 ))
+        except Exception:
+            pass
 
         return results
 
-    def get_current_branch_name(self) -> str:
+    def _head_branch_name(self) -> str:
+        """Return current branch name, or 'HEAD' if in detached HEAD state."""
         try:
-            return self._repo.active_branch.name
-        except TypeError:
-            return f"HEAD ({self._repo.head.commit.hexsha[:7]})"
+            return self._repo.git.rev_parse("--abbrev-ref", "HEAD").strip()
+        except Exception:
+            return "HEAD"
+
+    def get_current_branch_name(self) -> str:
+        """Human-readable name for UI display."""
+        name = self._head_branch_name()
+        if name == "HEAD":
+            try:
+                hexsha = self._repo.git.rev_parse("HEAD").strip()
+                return f"HEAD ({hexsha[:7]})"
+            except Exception:
+                return "HEAD (detached)"
+        return name
 
     def _current_rev(self) -> str:
-        """Return a git-parseable rev for the current HEAD (works in detached HEAD too)."""
-        try:
-            return self._repo.active_branch.name
-        except TypeError:
-            return self._repo.head.commit.hexsha
+        """Git-parseable rev for current HEAD (safe in detached HEAD)."""
+        name = self._head_branch_name()
+        if name == "HEAD":
+            try:
+                return self._repo.git.rev_parse("HEAD").strip()
+            except Exception:
+                return "HEAD"
+        return name
 
     def list_commits(
         self,
@@ -79,144 +107,97 @@ class GitService:
         rev = branch if branch else self._current_rev()
         unpushed_hashes = self._get_unpushed_hashes(branch=branch)
 
-        commits = []
-        for commit in self._repo.iter_commits(rev, max_count=max_count):
-            if author and author.lower() not in commit.author.name.lower():
+        # Records terminated by NUL (\x00); fields by \x1f.
+        # Message is last so any stray \x1f in the body stays in parts[4].
+        fmt = f"%H{_SEP}%h{_SEP}%aN{_SEP}%aI{_SEP}%B%x00"
+        args = [rev, f"--format={fmt}", f"--max-count={max_count}"]
+        if author:
+            args.append(f"--author={author}")
+
+        try:
+            raw = self._repo.git.log(*args)
+        except Exception:
+            return []
+
+        commits: list[CommitInfo] = []
+        for record in raw.split("\x00"):
+            record = record.strip()
+            if not record:
                 continue
+            parts = record.split(_SEP, 4)
+            if len(parts) < 5:
+                continue
+            full_hash, short_hash, author_name, date_str = (p.strip() for p in parts[:4])
+            message = parts[4].strip()
+            if not full_hash:
+                continue
+            try:
+                date = datetime.fromisoformat(date_str)
+            except Exception:
+                date = datetime.now(timezone.utc)
             commits.append(CommitInfo(
-                hash=commit.hexsha,
-                short_hash=commit.hexsha[:7],
-                message=commit.message.strip(),
-                author=commit.author.name,
-                date=commit.authored_datetime,
-                is_pushed=commit.hexsha not in unpushed_hashes,
-                changed_files=[],  # lazy — fetched on demand via get_changed_files()
+                hash=full_hash,
+                short_hash=short_hash,
+                message=message,
+                author=author_name,
+                date=date,
+                is_pushed=full_hash not in unpushed_hashes,
+                changed_files=[],  # lazy — fetched on demand
             ))
         return commits
 
     def get_changed_files(self, commit_hash: str) -> list[str]:
-        """Fetch changed files for a single commit (called lazily on detail view)."""
-        commit = self._repo.commit(commit_hash)
-        return self._get_changed_files(commit)
-
-    def get_file_diff(self, commit_hash: str, file_path: str) -> str:
-        commit = self._repo.commit(commit_hash)
-        if not commit.parents:
-            # Initial commit: diff against empty tree
-            diff = self._repo.git.diff(
-                git.NULL_TREE, commit.hexsha, "--", file_path
+        """Fetch changed files for a single commit (lazy, called from detail panel)."""
+        parent_line = self._repo.git.log("--format=%P", "-1", commit_hash).strip()
+        if not parent_line:
+            # Initial commit — diff against empty tree
+            output = self._repo.git.diff_tree(
+                "--no-commit-id", "-r", "--name-only", commit_hash
             )
         else:
-            diff = self._repo.git.diff(
-                commit.parents[0].hexsha, commit.hexsha, "--", file_path
+            first_parent = parent_line.split()[0]
+            output = self._repo.git.diff_tree(
+                "--no-commit-id", "-r", "--name-only", first_parent, commit_hash,
             )
-        return diff
+        return [f for f in output.splitlines() if f]
+
+    def get_file_diff(self, commit_hash: str, file_path: str) -> str:
+        parent_line = self._repo.git.log("--format=%P", "-1", commit_hash).strip()
+        if not parent_line:
+            return self._repo.git.diff(git.NULL_TREE, commit_hash, "--", file_path)
+        first_parent = parent_line.split()[0]
+        return self._repo.git.diff(first_parent, commit_hash, "--", file_path)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _get_unpushed_hashes(self, branch: str | None = None) -> set[str]:
-        """Returns hashes of commits not yet pushed to remote."""
+        """Return full hashes of commits not yet pushed to the tracking remote."""
         try:
-            ref = self._repo.active_branch if branch is None else self._repo.heads[branch]
-            tracking = ref.tracking_branch()
-            if tracking is None:
-                # No remote tracking branch — all commits are "unpushed"
-                return {c.hexsha for c in self._repo.iter_commits(ref)}
-            return {
-                c.hexsha
-                for c in self._repo.iter_commits(f"{tracking.name}..{ref.name}")
-            }
+            ref_name = branch if branch else self._head_branch_name()
+
+            # Resolve tracking branch name via rev-parse
+            try:
+                tracking = self._repo.git.rev_parse(
+                    "--abbrev-ref", f"{ref_name}@{{upstream}}"
+                ).strip()
+            except git.GitCommandError:
+                # No upstream configured — treat everything as unpushed
+                out = self._repo.git.log("--format=%H", ref_name)
+                return set(out.splitlines())
+
+            out = self._repo.git.log("--format=%H", f"{tracking}..{ref_name}")
+            return set(out.splitlines())
         except Exception:
             return set()
 
-    def _get_changed_files(self, commit: git.Commit) -> list[str]:
-        # Use git diff-tree (porcelain command) instead of the GitPython object
-        # model to avoid _CatFileContentStream "read of closed file" on Windows.
-        if not commit.parents:
-            output = self._repo.git.diff_tree(
-                "--no-commit-id", "-r", "--name-only", commit.hexsha
-            )
-        else:
-            output = self._repo.git.diff_tree(
-                "--no-commit-id", "-r", "--name-only",
-                commit.parents[0].hexsha, commit.hexsha,
-            )
-        return [f for f in output.splitlines() if f]
-
-    # ------------------------------------------------------------------
-    # Mutations
-    # ------------------------------------------------------------------
-
-    def revert(self, commit_hash: str) -> None:
-        """Create a new commit that reverts the given commit."""
-        self._require_clean_workdir()
-        self._repo.git.revert(commit_hash, "--no-edit")
-
-    def drop(self, commit_hash: str) -> None:
-        """Remove a commit from history using interactive rebase (drop).
-
-        Raises DirtyWorkdirError if there are uncommitted changes.
-        Note: Relies on /bin/sh and Python being available.
-        The GIT_SEQUENCE_EDITOR script drops the target commit by its full hash
-        prefix-matching the abbreviated hash used by git in the rebase todo file.
-        """
-        self._require_clean_workdir()
-        script = f"""#!/bin/sh
-python3 - "$1" << 'PYEOF'
-import sys
-target = "{commit_hash}"
-path = sys.argv[1]
-with open(path) as f:
-    lines = f.readlines()
-out = []
-for line in lines:
-    parts = line.split()
-    if len(parts) >= 2 and parts[0] == "pick" and target.startswith(parts[1]):
-        out.append("drop " + " ".join(parts[1:]) + "\\n")
-    else:
-        out.append(line)
-with open(path, "w") as f:
-    f.writelines(out)
-PYEOF
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
-            f.write(script)
-            script_path = f.name
-        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
-        try:
-            env = os.environ.copy()
-            env["GIT_SEQUENCE_EDITOR"] = script_path
-            # Count commits to determine safe rebase range
-            all_commits = list(self._repo.iter_commits(
-                self._repo.active_branch.name, max_count=51
-            ))
-            depth = len(all_commits)
-            if depth < 2:
-                # Only one commit — nothing to rebase onto
-                raise ValueError("Cannot drop the only commit in the repository.")
-            # Use HEAD~N where N = min(50, depth-1) to avoid going before initial commit
-            rebase_range = f"HEAD~{min(50, depth - 1)}"
-            self._repo.git.rebase("-i", rebase_range, env=env)
-        except git.GitCommandError as e:
-            # If rebase left the repo mid-rebase, propagate a RebaseConflictError
-            if self._repo.is_dirty() or (Path(self._repo.git_dir) / "rebase-merge").exists() \
-                    or (Path(self._repo.git_dir) / "rebase-apply").exists():
-                raise RebaseConflictError(str(e)) from e
-            raise
-        finally:
-            os.unlink(script_path)
-
-    def abort_rebase(self) -> None:
-        """Abort an in-progress rebase."""
-        self._repo.git.rebase("--abort")
-
     def _require_clean_workdir(self) -> None:
-        """Raise DirtyWorkdirError if there are uncommitted changes."""
-        if self._repo.is_dirty(index=True, working_tree=True, untracked_files=False):
-            dirty = [item.a_path for item in self._repo.index.diff(None)]
-            dirty += [item.a_path for item in self._repo.index.diff("HEAD")]
+        """Raise DirtyWorkdirError if there are uncommitted changes (staged or unstaged)."""
+        out = self._repo.git.status("--porcelain")
+        dirty = [ln[3:] for ln in out.splitlines()
+                 if ln.strip() and ln[:2] not in ("??", "  ")]
+        if dirty:
             files = ", ".join(dirty[:5])
             if len(dirty) > 5:
                 files += f" (+{len(dirty) - 5} more)"
@@ -225,55 +206,132 @@ PYEOF
                 "Please commit or stash them before proceeding."
             )
 
+    # ------------------------------------------------------------------
+    # Mutations
+    # ------------------------------------------------------------------
+
+    def revert(self, commit_hash: str) -> None:
+        self._require_clean_workdir()
+        self._repo.git.revert(commit_hash, "--no-edit")
+
+    def drop(self, commit_hash: str) -> None:
+        """Remove a commit using interactive rebase. Works on Windows and Unix."""
+        self._require_clean_workdir()
+
+        try:
+            depth = int(self._repo.git.rev_list("--count", "HEAD").strip())
+        except Exception:
+            depth = 0
+        if depth < 2:
+            raise ValueError("Cannot drop the only commit in the repository.")
+
+        # Write the sequence editor as a plain Python script — no shell required,
+        # works identically on Windows and Unix.
+        py_script = (
+            "import sys\n"
+            f"target = {commit_hash!r}\n"
+            "lines = open(sys.argv[1]).readlines()\n"
+            "out = []\n"
+            "for line in lines:\n"
+            "    parts = line.split()\n"
+            "    if len(parts) >= 2 and parts[0] == 'pick' and target.startswith(parts[1]):\n"
+            "        out.append('drop ' + ' '.join(parts[1:]) + '\\n')\n"
+            "    else:\n"
+            "        out.append(line)\n"
+            "open(sys.argv[1], 'w').writelines(out)\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as pf:
+            pf.write(py_script)
+            py_path = pf.name
+
+        # GIT_SEQUENCE_EDITOR must be an executable command; wrap in a launcher.
+        if sys.platform == "win32":
+            launcher_content = f'@echo off\n"{sys.executable}" "{py_path}" %*\n'
+            launcher_suffix = ".bat"
+        else:
+            launcher_content = f'#!/bin/sh\nexec "{sys.executable}" "{py_path}" "$@"\n'
+            launcher_suffix = ".sh"
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=launcher_suffix, delete=False, encoding="utf-8"
+        ) as lf:
+            lf.write(launcher_content)
+            launcher_path = lf.name
+
+        if sys.platform != "win32":
+            os.chmod(launcher_path, os.stat(launcher_path).st_mode | stat.S_IEXEC)
+
+        try:
+            env = os.environ.copy()
+            env["GIT_SEQUENCE_EDITOR"] = launcher_path
+            rebase_range = f"HEAD~{min(50, depth - 1)}"
+            self._repo.git.rebase("-i", rebase_range, env=env)
+        except git.GitCommandError as e:
+            if (self._git_dir / "rebase-merge").exists() \
+                    or (self._git_dir / "rebase-apply").exists():
+                raise RebaseConflictError(str(e)) from e
+            raise
+        finally:
+            for path in (py_path, launcher_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def abort_rebase(self) -> None:
+        self._repo.git.rebase("--abort")
+
     def squash(self, commit_hash: str, message: str) -> None:
-        """Squash all unpushed commits up to and including commit_hash into one.
-
-        Note: For repos where all commits are unpushed (no tracking branch),
-        uses git update-ref -d HEAD to orphan the branch before recommitting.
-        """
+        """Squash all unpushed commits into one commit with the given message."""
         unpushed = self._get_unpushed_hashes()
-        all_commits = list(self._repo.iter_commits(
-            self._repo.active_branch.name, max_count=500
-        ))
-
-        # Find commits to squash: from oldest unpushed up to commit_hash
-        unpushed_commits = [c for c in all_commits if c.hexsha in unpushed]
-        if not unpushed_commits:
-            return
-
-        # Verify commit_hash is in the unpushed set
         if commit_hash not in unpushed:
-            raise ValueError(f"Commit {commit_hash[:7]} is already pushed and cannot be squashed.")
+            raise ValueError(
+                f"Commit {commit_hash[:7]} is already pushed and cannot be squashed."
+            )
 
-        oldest_unpushed = unpushed_commits[-1]  # last in list = oldest commit
+        # All hashes on current branch, newest-first
+        all_hashes = self._repo.git.log(
+            "--format=%H", self._head_branch_name()
+        ).splitlines()
+        unpushed_ordered = [h for h in reversed(all_hashes) if h in unpushed]
+        if not unpushed_ordered:
+            return
+        oldest_hash = unpushed_ordered[0]
 
-        # Reset to the parent of the oldest unpushed commit
-        if not oldest_unpushed.parents:
-            # All commits are unpushed — orphan the branch
+        parent_line = self._repo.git.log("--format=%P", "-1", oldest_hash).strip()
+        if not parent_line:
+            # Entire branch is unpushed — orphan it
             self._repo.git.update_ref("-d", "HEAD")
         else:
-            root = oldest_unpushed.parents[0].hexsha
-            self._repo.git.reset("--soft", root)
+            self._repo.git.reset("--soft", parent_line.split()[0])
 
-        self._repo.index.commit(message)
+        self._repo.git.commit("-m", message)
 
     def cherry_pick(self, commit_hash: str) -> None:
-        """Apply a commit from another branch onto the current branch."""
         self._repo.git.cherry_pick(commit_hash)
 
     def push(self) -> None:
-        """Push current branch to its tracking remote. Raises git.GitCommandError on failure."""
-        branch = self._repo.active_branch
-        tracking = branch.tracking_branch()
-        if tracking is None:
-            raise ValueError(f"Branch '{branch.name}' has no remote tracking branch.")
-        remote_name = tracking.remote_name
-        self._repo.remote(remote_name).push(branch.name)
+        branch_name = self._head_branch_name()
+        if branch_name == "HEAD":
+            raise ValueError("Cannot push in detached HEAD state.")
+        try:
+            upstream = self._repo.git.rev_parse(
+                "--abbrev-ref", f"{branch_name}@{{upstream}}"
+            ).strip()
+            remote_name = upstream.split("/")[0]
+        except git.GitCommandError:
+            raise ValueError(f"Branch '{branch_name}' has no remote tracking branch.")
+        self._repo.git.push(remote_name, branch_name)
 
     def has_remote_tracking(self) -> bool:
-        """Returns True if current branch has a remote tracking branch."""
         try:
-            return self._repo.active_branch.tracking_branch() is not None
+            branch_name = self._head_branch_name()
+            if branch_name == "HEAD":
+                return False
+            self._repo.git.rev_parse("--abbrev-ref", f"{branch_name}@{{upstream}}")
+            return True
         except Exception:
             return False
 
