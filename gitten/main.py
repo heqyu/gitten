@@ -1,10 +1,7 @@
 import sys
 from pathlib import Path
 
-try:
-    from gitten.app import GittенApp
-except ImportError:
-    GittенApp = None  # type: ignore[assignment,misc]
+from gitten.app import GittenApp
 
 
 def main() -> None:
@@ -22,7 +19,7 @@ def main() -> None:
         print(f"Error: path {repo_path} does not exist.", file=sys.stderr)
         sys.exit(1)
 
-    app = GittенApp(repo_path=repo_path)
+    app = GittenApp(repo_path=repo_path)
     app.run()
 
 

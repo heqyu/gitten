@@ -10,7 +10,7 @@ def test_main_uses_cwd_when_no_arg(tmp_path, monkeypatch):
     import git
     git.Repo.init(tmp_path)
 
-    with patch("gitten.main.GittенApp") as mock_app_cls:
+    with patch("gitten.main.GittenApp") as mock_app_cls:
         mock_app = MagicMock()
         mock_app_cls.return_value = mock_app
         with patch("sys.argv", ["gitten"]):
@@ -25,7 +25,7 @@ def test_main_accepts_path_argument(tmp_path):
     import git
     git.Repo.init(tmp_path)
 
-    with patch("gitten.main.GittенApp") as mock_app_cls:
+    with patch("gitten.main.GittenApp") as mock_app_cls:
         mock_app = MagicMock()
         mock_app_cls.return_value = mock_app
         with patch("sys.argv", ["gitten", str(tmp_path)]):
