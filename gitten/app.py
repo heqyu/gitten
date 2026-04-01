@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Label
 
@@ -28,6 +29,7 @@ class GittenApp(App):
         self.repo_path = repo_path
         self.git = GitService(repo_path)
         self._left_expanded = False
+        self._status_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -62,9 +64,19 @@ class GittenApp(App):
         bar = self.query_one("#status-bar", Label)
         bar.update(message)
         bar.set_classes(style)
-        self.set_timer(3, lambda: bar.update(""))
+        # Cancel any existing status timer before setting a new one
+        if hasattr(self, "_status_timer") and self._status_timer is not None:
+            self._status_timer.stop()
+        self._status_timer = self.set_timer(3, lambda: self._clear_status())
 
-    def show_error(self, message: str, allow_abort: bool = False, abort_fn=None) -> None:
+    def _clear_status(self) -> None:
+        bar = self.query_one("#status-bar", Label)
+        bar.update("")
+        bar.remove_class("success")
+        bar.remove_class("error")
+        self._status_timer = None
+
+    def show_error(self, message: str, allow_abort: bool = False, abort_fn: Callable[[], None] | None = None) -> None:
         from gitten.components.error_modal import ErrorModal
         self.push_screen(ErrorModal(message=message, allow_abort=allow_abort, abort_fn=abort_fn))
 
